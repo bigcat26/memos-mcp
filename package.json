@@ -1,0 +1,18 @@
+{
+  "name": "memos-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Memos API integration",
+  "main": "memos_mcp/server.py",
+  "scripts": {
+    "start": "python memos_mcp/server.py",
+    "dev": "python -m memos_mcp.server",
+    "install": "pip install -r requirements.txt",
+    "test": "python -m pytest tests/ -v"
+  },
+  "keywords": ["mcp", "memos", "api", "server"],
+  "author": "bigcat26@gmail.com",
+  "license": "Apache 2.0",
+  "dependencies": {
+    "python": ">=3.8"
+  }
+}
