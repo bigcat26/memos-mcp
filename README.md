@@ -1,6 +1,8 @@
 # Memos MCP Server
 
-A Model Context Protocol (MCP) server that provides integration with the Memos API, allowing AI assistants to interact with your Memos instance for managing notes, memos, and knowledge bases.
+[![uvx](https://img.shields.io/badge/uvx-ready-blue)](https://github.com/astral-sh/uvx)
+
+A Model Context Protocol (MCP) server that provides integration with [usememos](https://github.com/usememos/memos), allowing AI assistants to interact with your Memos instance for managing notes, memos, and knowledge bases.
 
 ## Features
 
@@ -24,9 +26,31 @@ A Model Context Protocol (MCP) server that provides integration with the Memos A
 
 ## Installation
 
-1. Clone or download this repository
-2. Install dependencies:
+### Option 1: Direct Installation with uvx (Recommended)
+
+```bash
+uvx --from git+https://github.com/bigcat26/memos-mcp.git memos-mcp
+```
+
+### Option 2: Manual Installation for Development
+
+```bash
+git clone https://github.com/bigcat26/memos-mcp.git
+cd memos-mcp
+pip install -r requirements.txt
+```
+
+---
+
+## 🌐 Repository
+
+- **GitHub**: https://github.com/bigcat26/memos-mcp
+- **usememos**: https://github.com/usememos/memos
+   
+2. Or clone for local development:
    ```bash
+   git clone https://github.com/bigcat26/memos-mcp.git
+   cd memos-mcp
    pip install -r requirements.txt
    ```
 
@@ -61,17 +85,22 @@ A Model Context Protocol (MCP) server that provides integration with the Memos A
 
 ## Usage
 
-### Running the Server
+### Running the Server (Recommended)
 
 ```bash
-# Direct execution
-python memos_mcp/server.py
-
-# Or using the module
-python -m memos_mcp.server
+# Install and run with uvx
+uvx --from git+https://github.com/bigcat26/memos-mcp.git memos-mcp
 ```
 
-The server uses stdio transport and will wait for MCP protocol messages.
+### Local Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Direct execution
+python -m memos_mcp.server
+```
 
 ### Integration with AI Assistants
 
@@ -81,8 +110,8 @@ Add this server to your AI assistant's MCP configuration:
 {
   "mcpServers": {
     "memos": {
-      "command": "python",
-      "args": ["path/to/memos_mcp/server.py"],
+      "command": "uvx",
+      "args": ["run", "bigcat26/memos-mcp"],
       "env": {
         "MEMOS_BASE_URL": "https://your-memos-instance.com",
         "MEMOS_ACCESS_TOKEN": "your_access_token_here"

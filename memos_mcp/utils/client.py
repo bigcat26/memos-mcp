@@ -23,7 +23,7 @@ class MemosClient:
     """HTTP client for Memos API."""
 
     def __init__(self):
-        """Initialize the Memos client."""
+        """Initialize Memos client."""
         self.base_url = settings.memos_api_url
         self.access_token = settings.memos_access_token
         self.timeout = settings.memos_timeout
@@ -35,7 +35,7 @@ class MemosClient:
         data: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Make a request to the Memos API."""
+        """Make a request to Memos API."""
         url = f"{self.base_url}{endpoint}"
 
         # Add query parameters
