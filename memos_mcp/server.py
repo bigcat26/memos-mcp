@@ -11,11 +11,88 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.config import settings
 from utils.client import memos_client, MemosAPIError
 
+def _api_error_json(e: Exception) -> str:
+    """将 API 异常转为 JSON 字符串，含 error 与 status_code，便于上层/单测感知 4xx/5xx。"""
+    payload: Dict[str, Any] = {"error": str(e)}
+    if isinstance(e, MemosAPIError) and getattr(e, "status_code", None) is not None:
+        payload["status_code"] = e.status_code
+    return json.dumps(payload)
+
+
 logging.basicConfig(
     level=getattr(logging, settings.log_level),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _memo_id(memo: Dict[str, Any]) -> str:
+    """从 memo 中取展示用 ID，兼容 name（新 API）与 id（旧 API）。"""
+    return memo.get("name") or str(memo.get("id", "unknown"))
+
+
+def _memo_created(memo: Dict[str, Any]) -> str:
+    """从 memo 中取创建时间，兼容 createTime（新 API）与 createdTs（旧 API）。"""
+    return memo.get("createTime") or memo.get("createdTs", "")
+
+
+def _memo_updated(memo: Dict[str, Any]) -> str:
+    """从 memo 中取更新时间，兼容 updateTime（新 API）与 updatedTs（旧 API）。"""
+    return memo.get("updateTime") or memo.get("updatedTs", "")
+
+
+def _memo_creator(memo: Dict[str, Any]) -> str:
+    """从 memo 中取创建者，兼容 creator 为字符串（新 API）或对象（旧 API）。"""
+    c = memo.get("creator")
+    if isinstance(c, dict):
+        return c.get("nickname", "Unknown")
+    return str(c) if c else "Unknown"
+
+
+def _result_memos(result: Dict[str, Any]) -> List[Any]:
+    """从 API 响应中取 memo 列表，兼容 memos（新 API）与 data（旧 API）。"""
+    return result.get("memos", result.get("data", []))
+
+
+def _result_memo(result: Dict[str, Any]) -> Dict[str, Any]:
+    """从 API 响应中取单条 memo，兼容 memo（新 API）与 data（旧 API）。"""
+    return result.get("memo", result.get("data", {}))
+
+
+def _create_memo_response(memo: Dict[str, Any]) -> Dict[str, Any]:
+    """create_memo 精简返回：仅 name, createTime, content（name 为 memo 标识，格式 memos/xxxxx）。"""
+    return {
+        "name": memo.get("name") or str(memo.get("id", "")),
+        "createTime": _memo_created(memo),
+        "content": memo.get("content", ""),
+    }
+
+
+def _memo_to_json_obj(memo: Dict[str, Any]) -> Dict[str, Any]:
+    """将原始 memo 转为 MCP 工具约定字段：name, id(若有), createTime, updateTime, content, tags。"""
+    raw_tags = memo.get("tags", [])
+    if raw_tags and isinstance(raw_tags[0], dict):
+        tags = [t.get("name", "") for t in raw_tags if t.get("name")]
+    else:
+        tags = [str(t) for t in raw_tags] if raw_tags else []
+    return {
+        "name": memo.get("name") or str(memo.get("id", "")),
+        "createTime": _memo_created(memo),
+        "updateTime": _memo_updated(memo),
+        "content": memo.get("content", ""),
+        "tags": tags,
+    }
+
+
+# 工具名称列表，供单元测试等 import 使用
+TOOL_NAMES = [
+    "create_memo",
+    "list_memos",
+    "get_memo",
+    "update_memo",
+    "delete_memo",
+    "search_memos",
+]
 
 
 class SimpleMCPServer:
@@ -63,39 +140,39 @@ class SimpleMCPServer:
             },
             "get_memo": {
                 "name": "get_memo",
-                "description": "Get a specific memo by ID",
+                "description": "Get a specific memo by name (e.g. memos/xxxxx)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "memo_id": {
-                            "type": "integer",
-                            "description": "The ID of the memo to retrieve",
+                        "name": {
+                            "type": "string",
+                            "description": "The memo name (e.g. memos/xxxxx)",
                         }
                     },
-                    "required": ["memo_id"],
+                    "required": ["name"],
                 },
             },
             "update_memo": {
                 "name": "update_memo",
-                "description": "Update an existing memo",
+                "description": "Update an existing memo by name (e.g. memos/xxxxx)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "memo_id": {"type": "integer"},
+                        "name": {"type": "string", "description": "The memo name (e.g. memos/xxxxx)"},
                         "content": {"type": "string"},
                         "visibility": {"type": "string"},
                         "row_status": {"type": "string"},
                     },
-                    "required": ["memo_id"],
+                    "required": ["name"],
                 },
             },
             "delete_memo": {
                 "name": "delete_memo",
-                "description": "Delete a memo",
+                "description": "Delete a memo by name (e.g. memos/xxxxx)",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {"memo_id": {"type": "integer"}},
-                    "required": ["memo_id"],
+                    "properties": {"name": {"type": "string", "description": "The memo name (e.g. memos/xxxxx)"}},
+                    "required": ["name"],
                 },
             },
             "search_memos": {
@@ -111,20 +188,15 @@ class SimpleMCPServer:
                     "required": ["query"],
                 },
             },
-            "get_tags": {
-                "name": "get_tags",
-                "description": "Get all available tags from Memos",
-                "inputSchema": {"type": "object"},
-            },
         }
         return tools
 
     def _register_resources(self) -> Dict[str, Any]:
         resources = {
             "memo": {
-                "uriTemplate": "memo://{memo_id}",
+                "uriTemplate": "memo://{memo_name}",
                 "name": "Individual memo",
-                "description": "Access individual memo content",
+                "description": "Access individual memo content (memo_name e.g. memos/xxxxx)",
             },
             "memos_list": {
                 "uri": "memos://list",
@@ -188,12 +260,12 @@ class SimpleMCPServer:
                 return {"content": [{"type": "text", "text": result}]}
 
             elif tool_name == "get_memo":
-                result = self._get_memo(arguments["memo_id"])
+                result = self._get_memo(arguments["name"])
                 return {"content": [{"type": "text", "text": result}]}
 
             elif tool_name == "update_memo":
                 result = self._update_memo(
-                    memo_id=arguments["memo_id"],
+                    memo_name=arguments["name"],
                     content=arguments.get("content"),
                     visibility=arguments.get("visibility"),
                     row_status=arguments.get("row_status"),
@@ -201,7 +273,7 @@ class SimpleMCPServer:
                 return {"content": [{"type": "text", "text": result}]}
 
             elif tool_name == "delete_memo":
-                result = self._delete_memo(arguments["memo_id"])
+                result = self._delete_memo(arguments["name"])
                 return {"content": [{"type": "text", "text": result}]}
 
             elif tool_name == "search_memos":
@@ -212,23 +284,19 @@ class SimpleMCPServer:
                 )
                 return {"content": [{"type": "text", "text": result}]}
 
-            elif tool_name == "get_tags":
-                result = self._get_tags()
-                return {"content": [{"type": "text", "text": result}]}
-
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
 
         except Exception as e:
             error_message = f"Error executing {tool_name}: {str(e)}"
             logger.error(error_message)
-            return {"content": [{"type": "text", "text": error_message}]}
+            return {"content": [{"type": "text", "text": json.dumps({"error": error_message})}]}
 
     def handle_resource_read(self, uri: str) -> Dict[str, Any]:
         try:
             if uri.startswith("memo://"):
-                memo_id = uri.replace("memo://", "")
-                result = self._get_memo_resource(memo_id)
+                memo_name = uri.replace("memo://", "")
+                result = self._get_memo_resource(memo_name)
                 return {"contents": [{"type": "text", "text": result}]}
 
             elif uri == "memos://list":
@@ -246,17 +314,25 @@ class SimpleMCPServer:
         except Exception as e:
             error_message = f"Error reading resource {uri}: {str(e)}"
             logger.error(error_message)
-            return {"contents": [{"type": "text", "text": error_message}]}
+            return {"contents": [{"type": "text", "text": json.dumps({"error": error_message})}]}
 
     def _create_memo(self, content: str, visibility: str = "PRIVATE") -> str:
         try:
             result = memos_client.create_memo(content, visibility)
-            memo_id = result.get("data", {}).get("id", "unknown")
-            return f"Successfully created memo #{memo_id}: {content[:50]}..."
+            # create_memo API 直接返回 memo 对象（顶层），无 memo/data 包装；兼容旧格式用 _result_memo
+            if not isinstance(result, dict):
+                return json.dumps({"success": False, "error": "No memo in response"})
+            if result.get("name") is not None or result.get("content") is not None:
+                memo = result
+            else:
+                memo = _result_memo(result)
+            if memo:
+                return json.dumps({"success": True, "memo": _create_memo_response(memo)})
+            return json.dumps({"success": False, "error": "No memo in response"})
         except MemosAPIError as e:
-            return f"Error creating memo: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def _list_memos(
         self,
@@ -269,179 +345,121 @@ class SimpleMCPServer:
             result = memos_client.list_memos(
                 page=page, page_size=page_size, visibility=visibility, tag=tag
             )
-            memos = result.get("data", [])
+            memos = _result_memos(result)
 
             if not memos:
-                return "No memos found."
+                return json.dumps({"memos": [], "count": 0})
 
-            output = f"Found {len(memos)} memos:\n\n"
-            for memo in memos:
-                memo_id = memo.get("id", "unknown")
-                content = memo.get("content", "")[:100]
-                created_at = memo.get("createdTs", "")
-                visibility = memo.get("visibility", "unknown")
-
-                output += f"#{memo_id} [{visibility}] {content}...\n"
-
-            return output
+            items = [_memo_to_json_obj(m) for m in memos]
+            return json.dumps({"memos": items, "count": len(items)})
         except MemosAPIError as e:
-            return f"Error listing memos: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
-    def _get_memo(self, memo_id: int) -> str:
+    def _get_memo(self, memo_name: str) -> str:
         try:
-            result = memos_client.get_memo(memo_id)
-            memo = result.get("data", {})
+            result = memos_client.get_memo(memo_name)
+            memo = _result_memo(result)
 
             if not memo:
-                return f"Memo #{memo_id} not found."
+                return json.dumps({"error": f"Memo {memo_name!r} not found."})
 
-            content = memo.get("content", "")
-            created_at = memo.get("createdTs", "")
-            updated_at = memo.get("updatedTs", "")
-            visibility = memo.get("visibility", "")
-            creator = memo.get("creator", {}).get("nickname", "Unknown")
-
-            output = f"""Memo #{memo_id}
-Creator: {creator}
-Visibility: {visibility}
-Created: {created_at}
-Updated: {updated_at}
-
-Content:
-{content}"""
-
-            return output
+            return json.dumps(_memo_to_json_obj(memo))
         except MemosAPIError as e:
-            return f"Error getting memo: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def _update_memo(
         self,
-        memo_id: int,
+        memo_name: str,
         content: Optional[str] = None,
         visibility: Optional[str] = None,
         row_status: Optional[str] = None,
     ) -> str:
         try:
             result = memos_client.update_memo(
-                memo_id=memo_id,
+                memo_name=memo_name,
                 content=content,
                 visibility=visibility,
                 row_status=row_status,
             )
-            return f"Successfully updated memo #{memo_id}"
+            return json.dumps({"success": True, "memo_name": memo_name})
         except MemosAPIError as e:
-            return f"Error updating memo: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
-    def _delete_memo(self, memo_id: int) -> str:
+    def _delete_memo(self, memo_name: str) -> str:
         try:
-            memos_client.delete_memo(memo_id)
-            return f"Successfully deleted memo #{memo_id}"
+            memos_client.delete_memo(memo_name)
+            return json.dumps({"success": True, "memo_name": memo_name})
         except MemosAPIError as e:
-            return f"Error deleting memo: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def _search_memos(self, query: str, page: int = 1, page_size: int = 20) -> str:
         try:
             result = memos_client.search_memos(
                 query=query, page=page, page_size=page_size
             )
-            memos = result.get("data", [])
+            memos = _result_memos(result)
 
             if not memos:
-                return f"No memos found for query: '{query}'"
+                return json.dumps({"memos": [], "count": 0, "query": query})
 
-            output = f"Found {len(memos)} memos matching '{query}':\n\n"
-            for memo in memos:
-                memo_id = memo.get("id", "unknown")
-                content = memo.get("content", "")[:100]
-                created_at = memo.get("createdTs", "")
-
-                output += f"#{memo_id} {content}...\n"
-
-            return output
+            items = [_memo_to_json_obj(m) for m in memos]
+            return json.dumps({"memos": items, "count": len(items), "query": query})
         except MemosAPIError as e:
-            return f"Error searching memos: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
-    def _get_tags(self) -> str:
+    def _get_memo_resource(self, memo_name: str) -> str:
         try:
-            tags = memos_client.get_tags()
-            if not tags:
-                return "No tags found."
-            return f"Available tags: {', '.join(tags)}"
-        except MemosAPIError as e:
-            return f"Error getting tags: {str(e)}"
-        except Exception as e:
-            return f"Unexpected error: {str(e)}"
-
-    def _get_memo_resource(self, memo_id: str) -> str:
-        try:
-            memo_id_int = int(memo_id)
-            result = memos_client.get_memo(memo_id_int)
-            memo = result.get("data", {})
+            result = memos_client.get_memo(memo_name)
+            memo = _result_memo(result)
 
             if not memo:
-                return f"Memo #{memo_id} not found."
+                return json.dumps({"error": f"Memo {memo_name!r} not found."})
 
-            return memo.get("content", "")
-        except ValueError:
-            return f"Invalid memo ID: {memo_id}"
+            return json.dumps(_memo_to_json_obj(memo))
         except MemosAPIError as e:
-            return f"Error accessing memo: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def _get_memos_list_resource(self) -> str:
         try:
             result = memos_client.list_memos(page_size=50)
-            memos = result.get("data", [])
+            memos = _result_memos(result)
 
             if not memos:
-                return "No memos found."
+                return json.dumps({"memos": [], "count": 0})
 
-            output = "Recent Memos:\n\n"
-            for memo in memos:
-                memo_id = memo.get("id", "unknown")
-                content = memo.get("content", "")
-                created_at = memo.get("createdTs", "")
-
-                output += f"#{memo_id} [{created_at}]\n{content}\n\n"
-
-            return output
+            items = [_memo_to_json_obj(m) for m in memos]
+            return json.dumps({"memos": items, "count": len(items)})
         except MemosAPIError as e:
-            return f"Error accessing memos: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def _search_memos_resource(self, query: str) -> str:
         try:
             result = memos_client.search_memos(query=query, page_size=20)
-            memos = result.get("data", [])
+            memos = _result_memos(result)
 
             if not memos:
-                return f"No memos found for query: '{query}'"
+                return json.dumps({"memos": [], "count": 0, "query": query})
 
-            output = f"Search Results for '{query}':\n\n"
-            for memo in memos:
-                memo_id = memo.get("id", "unknown")
-                content = memo.get("content", "")
-                created_at = memo.get("createdTs", "")
-
-                output += f"#{memo_id} [{created_at}]\n{content}\n\n"
-
-            return output
+            items = [_memo_to_json_obj(m) for m in memos]
+            return json.dumps({"memos": items, "count": len(items), "query": query})
         except MemosAPIError as e:
-            return f"Error searching memos: {str(e)}"
+            return _api_error_json(e)
         except Exception as e:
-            return f"Unexpected error: {str(e)}"
+            return json.dumps({"error": str(e)})
 
     def run_stdio(self):
         logger.info("Starting Memos MCP server with stdio transport...")
@@ -600,11 +618,10 @@ Please:
                 return """Help me organize my memos.
 
 Please:
-1. Get all available tags using get_tags
-2. Retrieve recent memos using list_memos
-3. Analyze the current organization
-4. Suggest improvements to tagging and structure
-5. Identify any memos that need better organization"""
+1. Retrieve recent memos using list_memos (each memo has a tags field)
+2. Analyze the current organization and tags used
+3. Suggest improvements to tagging and structure
+4. Identify any memos that need better organization"""
 
         else:
             return f"Unknown prompt: {name}"
